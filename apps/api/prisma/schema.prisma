@@ -1,0 +1,408 @@
+// prisma/schema.prisma
+// This file defines your entire database structure.
+// Run `npm run db:migrate` to apply changes.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  MODERATOR
+  SUPPORT_AGENT
+  EMPLOYER
+  WORKER
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+  PENDING_VERIFICATION
+}
+
+enum MembershipPlan {
+  FREE
+  PRO
+  PREMIUM
+}
+
+enum JobStatus {
+  DRAFT
+  PENDING_REVIEW
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum ProofType {
+  TEXT
+  IMAGE
+  LINK
+  MIXED
+}
+
+enum SubmissionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  UNDER_REVIEW
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  JOB_PAYMENT
+  EARNING
+  REFUND
+  REFERRAL_BONUS
+  PLATFORM_FEE
+  WITHDRAWAL_FEE
+  MEMBERSHIP_PAYMENT
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum WithdrawalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PAID
+}
+
+// ─── MODELS ───────────────────────────────────────────────────────────────────
+
+model User {
+  id               String         @id @default(cuid())
+  email            String         @unique
+  username         String         @unique
+  passwordHash     String?
+  firstName        String
+  lastName         String
+  avatarUrl        String?
+  role             Role           @default(WORKER)
+  status           UserStatus     @default(PENDING_VERIFICATION)
+  isEmailVerified  Boolean        @default(false)
+  twoFactorSecret  String?
+  twoFactorEnabled Boolean        @default(false)
+  googleId         String?        @unique
+  country          String?
+  bio              String?
+  referralCode     String         @unique
+  referredById     String?
+  membershipPlan   MembershipPlan @default(FREE)
+  membershipExpiry DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  // Relations
+  wallet         Wallet?
+  jobsPosted     Job[]           @relation("EmployerJobs")
+  submissions    Submission[]
+  notifications  Notification[]
+  sessions       UserSession[]
+  activityLogs   ActivityLog[]
+  reviewsGiven   Review[]        @relation("ReviewerUser")
+  reviewsReceived Review[]       @relation("ReviewedUser")
+  supportTickets SupportTicket[]
+  referredBy     User?           @relation("Referrals", fields: [referredById], references: [id])
+  referrals      User[]          @relation("Referrals")
+  savedJobs      SavedJob[]
+  withdrawals    Withdrawal[]
+  auditLogs      AuditLog[]
+
+  @@index([email])
+  @@index([username])
+  @@index([referralCode])
+}
+
+model UserSession {
+  id           String   @id @default(cuid())
+  userId       String
+  refreshToken String   @unique
+  deviceInfo   String?
+  ipAddress    String?
+  lastActive   DateTime @default(now())
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model EmailVerification {
+  id        String   @id @default(cuid())
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([token])
+}
+
+model PasswordReset {
+  id        String   @id @default(cuid())
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model Category {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  slug        String  @unique
+  icon        String?
+  description String?
+  isActive    Boolean @default(true)
+
+  jobs Job[]
+}
+
+model Job {
+  id                  String    @id @default(cuid())
+  title               String
+  description         String
+  instructions        String
+  employerId          String
+  categoryId          String
+  budgetPerWorker     Decimal   @db.Decimal(10, 4)
+  workersRequired     Int
+  workersCompleted    Int       @default(0)
+  deadline            DateTime
+  proofType           ProofType
+  status              JobStatus @default(DRAFT)
+  locationRestriction String?
+  tags                String[]
+  isFeatured          Boolean   @default(false)
+  featuredUntil       DateTime?
+  escrowHeld          Decimal   @db.Decimal(10, 4) @default(0)
+  views               Int       @default(0)
+  rejectionReason     String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  employer    User               @relation("EmployerJobs", fields: [employerId], references: [id])
+  category    Category           @relation(fields: [categoryId], references: [id])
+  submissions Submission[]
+  savedBy     SavedJob[]
+  escrowTx    EscrowTransaction?
+
+  @@index([status])
+  @@index([employerId])
+  @@index([categoryId])
+}
+
+model Submission {
+  id            String           @id @default(cuid())
+  jobId         String
+  workerId      String
+  proofText     String?
+  proofImageUrl String?
+  proofLink     String?
+  status        SubmissionStatus @default(PENDING)
+  feedback      String?
+  earnings      Decimal?         @db.Decimal(10, 4)
+  submittedAt   DateTime         @default(now())
+  reviewedAt    DateTime?
+
+  job    Job  @relation(fields: [jobId], references: [id])
+  worker User @relation(fields: [workerId], references: [id])
+
+  @@unique([jobId, workerId])
+  @@index([workerId])
+  @@index([status])
+}
+
+model SavedJob {
+  userId  String
+  jobId   String
+  savedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+  job  Job  @relation(fields: [jobId], references: [id])
+
+  @@id([userId, jobId])
+}
+
+model Wallet {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  balance       Decimal  @db.Decimal(10, 4) @default(0)
+  escrowBalance Decimal  @db.Decimal(10, 4) @default(0)
+  totalEarned   Decimal  @db.Decimal(10, 4) @default(0)
+  totalSpent    Decimal  @db.Decimal(10, 4) @default(0)
+  currency      String   @default("USD")
+  updatedAt     DateTime @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id])
+  transactions Transaction[]
+}
+
+model Transaction {
+  id          String            @id @default(cuid())
+  walletId    String
+  type        TransactionType
+  status      TransactionStatus @default(PENDING)
+  amount      Decimal           @db.Decimal(10, 4)
+  fee         Decimal           @db.Decimal(10, 4) @default(0)
+  netAmount   Decimal           @db.Decimal(10, 4)
+  description String?
+  reference   String?
+  metadata    Json?
+  createdAt   DateTime          @default(now())
+
+  wallet Wallet @relation(fields: [walletId], references: [id])
+
+  @@index([walletId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model EscrowTransaction {
+  id        String   @id @default(cuid())
+  jobId     String   @unique
+  amount    Decimal  @db.Decimal(10, 4)
+  released  Decimal  @db.Decimal(10, 4) @default(0)
+  refunded  Decimal  @db.Decimal(10, 4) @default(0)
+  createdAt DateTime @default(now())
+
+  job Job @relation(fields: [jobId], references: [id])
+}
+
+model Withdrawal {
+  id             String           @id @default(cuid())
+  userId         String
+  amount         Decimal          @db.Decimal(10, 4)
+  fee            Decimal          @db.Decimal(10, 4)
+  netAmount      Decimal          @db.Decimal(10, 4)
+  method         String
+  accountDetails Json
+  status         WithdrawalStatus @default(PENDING)
+  adminNote      String?
+  processedAt    DateTime?
+  createdAt      DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Review {
+  id         String   @id @default(cuid())
+  reviewerId String
+  reviewedId String
+  jobId      String?
+  rating     Int
+  comment    String?
+  createdAt  DateTime @default(now())
+
+  reviewer User @relation("ReviewerUser", fields: [reviewerId], references: [id])
+  reviewed User @relation("ReviewedUser", fields: [reviewedId], references: [id])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  type      String
+  isRead    Boolean  @default(false)
+  data      Json?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, isRead])
+}
+
+model SupportTicket {
+  id        String   @id @default(cuid())
+  userId    String
+  subject   String
+  status    String   @default("open")
+  priority  String   @default("normal")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User            @relation(fields: [userId], references: [id])
+  messages TicketMessage[]
+}
+
+model TicketMessage {
+  id        String   @id @default(cuid())
+  ticketId  String
+  senderId  String
+  message   String
+  isStaff   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  oldValue  Json?
+  newValue  Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([action])
+  @@index([createdAt])
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  userId    String
+  action    String
+  metadata  Json?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model PlatformSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model FraudFlag {
+  id        String   @id @default(cuid())
+  userId    String?
+  ipAddress String?
+  reason    String
+  details   Json?
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([ipAddress])
+  @@index([userId])
+}
